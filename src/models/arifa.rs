@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+
 const ONLINE_USERS_KEY: &str = "arifa:online_users";
 
 /// Core realtime pub/sub engine built on Redis.
@@ -73,7 +74,7 @@ impl Arifa {
         &self,
         channels: impl IntoIterator<Item = S>,
         session: C,
-    ) -> JoinHandle<()>
+    ) -> (JoinHandle<()>, String)
     where
         C: WsSession + 'static,
         S: Into<String>,
@@ -82,10 +83,13 @@ impl Arifa {
         let session = Arc::new(session);
         let arifa = self.clone();
         let session_id = Uuid::new_v4().to_string();
+        let task_session_id = session_id.clone();
 
-        tokio::spawn(async move {
-            arifa.subscription_loop(channels, session, session_id).await;
-        })
+        let handle = tokio::spawn(async move {
+            arifa.subscription_loop(channels, session, task_session_id).await;
+        });
+
+        (handle, session_id)
     }
 
     /// Internal subscription loop that processes Redis messages.
@@ -150,8 +154,7 @@ impl Arifa {
                 break;
             }
         }
-
-        let _ = self.remove_online_user(&session_id).await;
+ 
 
         println!("Subscription closed.");
     }

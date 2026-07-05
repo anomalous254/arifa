@@ -1,6 +1,6 @@
 [package]
 name = "arifa"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Redis-based realtime pub/sub engine for WebSocket applications"
 license = "Apache-2.0"
