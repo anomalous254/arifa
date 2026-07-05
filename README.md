@@ -1,6 +1,6 @@
 # Arifa
 
-Arifa is a lightweight Redis-based realtime pub/sub engine for Rust applications.
+Arifa is a lightweight, Redis-based realtime pub/sub engine for Rust applications.
 
 It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, making it easy to build scalable realtime systems that work across multiple application nodes.
 
@@ -16,11 +16,8 @@ It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, maki
 
 ## Installation
 
-Add Arifa to your `Cargo.toml`.
-
-```toml
-[dependencies]
-arifa = "0.1.0"
+```bash
+cargo add arifa
 ```
 
 ## Creating an Arifa Instance
@@ -62,7 +59,7 @@ impl WsSession for MySession {
 
 ## Subscribing
 
-`subscribe()` returns a tuple containing the spawned task and the generated session id.
+`subscribe()` returns a tuple containing the spawned task handle and the generated session id.
 
 ```rust
 let session = MySession;
@@ -100,7 +97,7 @@ arifa
 
 ## Unsubscribing
 
-When the WebSocket closes:
+`unsubscribe()` aborts the subscription's Tokio task via `JoinHandle::abort()`. This is a hard stop, so any code that would otherwise run after the subscription loop — including online-user cleanup — is skipped. Call `remove_online_user` yourself when the WebSocket closes:
 
 ```rust
 let _ = arifa.remove_online_user(&session_id).await;
@@ -139,7 +136,7 @@ pub enum NotificationKind {
 
 ## Online Users
 
-Mark a connection as online automatically through `subscribe()`.
+A connection is marked online automatically inside `subscribe()`.
 
 Query the current online count:
 
@@ -153,6 +150,8 @@ Remove a user when their connection closes:
 ```rust
 let _ = arifa.remove_online_user(&session_id).await;
 ```
+
+Note: this count reflects active subscriptions, not unique users — a client with multiple concurrent subscriptions (e.g. multiple open tabs) is counted once per subscription.
 
 ## Multi-node Routing
 
@@ -241,6 +240,12 @@ Each subscription owns its own Redis Pub/Sub connection and runs inside a dedica
 - Live dashboards
 - Social feeds
 - Collaborative applications
+
+## Notes
+
+- `unsubscribe()` uses `JoinHandle::abort()` (hard stop) — callers are responsible for calling `remove_online_user` themselves.
+- Each subscription spawns a dedicated Tokio task and generates its own session id.
+- A Redis Pub/Sub connection is created per subscription.
 
 ## License
 
