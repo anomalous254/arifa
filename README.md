@@ -115,7 +115,7 @@ pub struct WsMessage {
 }
 ```
 
-### NotificationScope
+### MessageScope
 
 ```rust
 pub enum MessageScope {
@@ -124,7 +124,7 @@ pub enum MessageScope {
 }
 ```
 
-### NotificationKind
+### MessageKind
 
 ```rust
 pub enum MessageKind {
