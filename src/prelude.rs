@@ -1,1 +1,1 @@
-pub use crate::{Arifa, NotificationKind, NotificationScope, WsMessage, WsSession};
+pub use crate::{Arifa, MessageScope, MessageKind,  WsMessage, WsSession};

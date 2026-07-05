@@ -4,5 +4,5 @@ mod models;
 pub mod prelude;
 mod session;
 
-pub use models::{Arifa, NotificationKind, NotificationScope, WsMessage};
+pub use models::{Arifa, MessageKind, MessageScope, WsMessage};
 pub use session::WsSession;

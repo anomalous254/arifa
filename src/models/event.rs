@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NotificationScope {
+pub enum MessageScope {
     Broadcast,
     Private,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NotificationKind {
+pub enum MessageKind {
     Feeds,
     DirectMessage,
     Event,
@@ -17,8 +17,8 @@ pub enum NotificationKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsMessage {
-    pub scope: NotificationScope,
-    pub kind: NotificationKind,
+    pub scope: MessageScope,
+    pub kind: MessageKind,
     pub node_id: Option<String>,
     pub payload: serde_json::Value,
 }

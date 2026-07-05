@@ -82,8 +82,8 @@ use arifa::prelude::*;
 use serde_json::json;
 
 let message = WsMessage {
-    scope: NotificationScope::Broadcast,
-    kind: NotificationKind::Feeds,
+    scope: MessageScope::Broadcast,
+    kind: MessageKind::Feeds,
     node_id: None,
     payload: json!({
         "message": "Hello world"
@@ -108,8 +108,8 @@ arifa.unsubscribe(handle);
 
 ```rust
 pub struct WsMessage {
-    pub scope: NotificationScope,
-    pub kind: NotificationKind,
+    pub scope: MessageScope,
+    pub kind: MessageKind,
     pub node_id: Option<String>,
     pub payload: serde_json::Value,
 }
@@ -118,7 +118,7 @@ pub struct WsMessage {
 ### NotificationScope
 
 ```rust
-pub enum NotificationScope {
+pub enum MessageScope {
     Broadcast,
     Private,
 }
@@ -127,7 +127,7 @@ pub enum NotificationScope {
 ### NotificationKind
 
 ```rust
-pub enum NotificationKind {
+pub enum MessageKind {
     Feeds,
     DirectMessage,
     Event,
@@ -159,8 +159,8 @@ To target only a specific application node, set the `node_id` field.
 
 ```rust
 let message = WsMessage {
-    scope: NotificationScope::Private,
-    kind: NotificationKind::Event,
+    scope: MessageScope::Private,
+    kind: MessageKind::Event,
     node_id: Some("node-2".into()),
     payload: serde_json::json!({
         "status": "updated"
