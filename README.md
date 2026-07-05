@@ -1,34 +1,29 @@
 # Arifa
 
-**Arifa** is a lightweight, Redis-based realtime pub/sub engine designed for WebSocket applications in Rust.
+Arifa is a lightweight Redis-based realtime pub/sub engine for Rust applications.
 
-It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, enabling scalable real-time messaging across multiple nodes.
+It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, making it easy to build scalable realtime systems that work across multiple application nodes.
 
----
+## Features
 
-## ✨ Features
-
-- Redis Pub/Sub integration
-- Multi-node support via `node_id`
-- WebSocket session abstraction (`WsSession`)
-- Channel-based message routing
+- Redis Pub/Sub
+- Tokio async runtime
+- WebSocket session abstraction
+- Channel-based subscriptions
+- Multi-node message routing
 - Online user tracking
-- Built on Tokio async runtime
-- Easy integration with Actix Web or custom WS frameworks
+- Framework agnostic (`WsSession` trait)
 
----
+## Installation
 
-##  Installation
-
-Add Arifa to your `Cargo.toml`:
+Add Arifa to your `Cargo.toml`.
 
 ```toml
+[dependencies]
 arifa = "0.1.0"
 ```
 
-##  Quick Start
-
-### 1. Create Arifa instance
+## Creating an Arifa Instance
 
 ```rust
 use arifa::prelude::*;
@@ -37,16 +32,16 @@ use arifa::prelude::*;
 async fn main() {
     let arifa = Arifa::new(
         "redis://127.0.0.1/",
-        "node-1"
+        "node-1",
     )
     .await
-    .expect("Failed to connect to Redis");
+    .unwrap();
 }
 ```
 
-### 2. Define a WebSocket session
+## Defining a WebSocket Session
 
-Implement the `WsSession` trait:
+Arifa is transport agnostic. Implement the `WsSession` trait for your WebSocket framework.
 
 ```rust
 use arifa::prelude::*;
@@ -59,46 +54,60 @@ impl WsSession for MySession {
     type Error = anyhow::Error;
 
     async fn send(&self, event: WsMessage) -> Result<(), Self::Error> {
-        println!("Received: {:?}", event);
+        println!("{:?}", event);
         Ok(())
     }
 }
 ```
 
-### 3. Subscribe to channels
+## Subscribing
+
+`subscribe()` returns a tuple containing the spawned task and the generated session id.
 
 ```rust
 let session = MySession;
 
-let handle = arifa.subscribe(
-    vec!["Location::123", "User::42"],
+let (handle, session_id) = arifa.subscribe(
+    vec![
+        "Location::891e2040897ffff",
+        "User::42",
+    ],
     session,
 );
 ```
 
-### 4. Publish messages
+The session id can be used to remove the connection from the online users set when the client disconnects.
+
+## Publishing Messages
 
 ```rust
 use arifa::prelude::*;
 use serde_json::json;
 
-let msg = WsMessage {
+let message = WsMessage {
     scope: NotificationScope::Broadcast,
-    kind: NotificationKind::Event,
+    kind: NotificationKind::Feeds,
     node_id: None,
-    payload: json!({"hello": "world"}),
+    payload: json!({
+        "message": "Hello world"
+    }),
 };
 
-arifa.publish("Location::123", &msg).await?;
+arifa
+    .publish("Location::891e2040897ffff", &message)
+    .await?;
 ```
 
-### 5. Unsubscribe (stop subscription)
+## Unsubscribing
+
+When the WebSocket closes:
 
 ```rust
+let _ = arifa.remove_online_user(&session_id).await;
 arifa.unsubscribe(handle);
 ```
 
-## 🌍 Message Model
+## Message Model
 
 ```rust
 pub struct WsMessage {
@@ -109,49 +118,130 @@ pub struct WsMessage {
 }
 ```
 
-### Scopes
+### NotificationScope
 
-- `Broadcast` → sent to all subscribers
-- `Private` → targeted messages
+```rust
+pub enum NotificationScope {
+    Broadcast,
+    Private,
+}
+```
 
-### Kinds
+### NotificationKind
 
-- `Feeds`
-- `DirectMessage`
-- `Event`
+```rust
+pub enum NotificationKind {
+    Feeds,
+    DirectMessage,
+    Event,
+}
+```
 
-## 🧠 Architecture
+## Online Users
 
-Arifa works as follows:
+Mark a connection as online automatically through `subscribe()`.
+
+Query the current online count:
+
+```rust
+let users = arifa.online_users().await?;
+println!("{users}");
+```
+
+Remove a user when their connection closes:
+
+```rust
+let _ = arifa.remove_online_user(&session_id).await;
+```
+
+## Multi-node Routing
+
+To target only a specific application node, set the `node_id` field.
+
+```rust
+let message = WsMessage {
+    scope: NotificationScope::Private,
+    kind: NotificationKind::Event,
+    node_id: Some("node-2".into()),
+    payload: serde_json::json!({
+        "status": "updated"
+    }),
+};
+
+arifa.publish("User::42", &message).await?;
+```
+
+If `node_id` is `None`, every subscribed node receives the message.
+
+## Example: Actix Web
+
+```rust
+#[get("/ws/connect")]
+pub async fn notification_channel(
+    req: HttpRequest,
+    body: web::Payload,
+    state: web::Data<AppState>,
+    query: web::Query<ConnectRequestQuery>,
+) -> Result<HttpResponse, Error> {
+    let (resp, session, mut stream) = actix_ws::handle(&req, body)?;
+
+    let location = format!("Location::{}", query.get_cell()?);
+    let user = format!("User::{}", query.user_id);
+
+    let ws = ActixWsSession::new(session);
+
+    let (handle, session_id) =
+        state.arifa.subscribe(vec![&location, &user], ws);
+
+    let arifa = state.arifa.clone();
+
+    actix_web::rt::spawn(async move {
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(actix_ws::Message::Close(_)) => break,
+                Err(_) => break,
+                _ => {}
+            }
+        }
+
+        let _ = arifa.remove_online_user(&session_id).await;
+        arifa.unsubscribe(handle);
+    });
+
+    Ok(resp)
+}
+```
+
+## Architecture
 
 ```
 WebSocket Client
-      ↓
-WsSession trait
-      ↓
-Arifa subscription task (Tokio)
-      ↓
+        │
+        ▼
+WsSession
+        │
+        ▼
+Arifa
+        │
+        ▼
 Redis Pub/Sub
-      ↓
-Multi-node routing (node_id filtering)
+        │
+        ▼
+Other Nodes
 ```
 
-Each WebSocket connection runs in its own lightweight async task.
+Each subscription owns its own Redis Pub/Sub connection and runs inside a dedicated Tokio task.
 
-## 🧩 Example Use Cases
+## Use Cases
 
-- Real-time chat systems
-- Live location tracking
-- Notifications system
-- Multiplayer game events
-- Social feed updates
+- Chat applications
+- Notifications
+- Live location updates
+- Multiplayer games
+- Live dashboards
+- Social feeds
+- Collaborative applications
 
-## ⚠️ Notes
-
-- `unsubscribe()` uses `JoinHandle::abort()` (hard stop)
-- Each subscription spawns a Tokio task
-- Redis Pub/Sub connection is per subscription
-
-## 📦 License
+## License
 
 Apache-2.0
