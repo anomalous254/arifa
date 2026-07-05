@@ -1,0 +1,26 @@
+[package]
+name = "arifa"
+version = "0.1.0"
+edition = "2024"
+description = "Redis-based realtime pub/sub engine for WebSocket applications"
+license = "Apache-2.0"
+repository = "https://github.com/anomalous254/arifa"
+readme = "README.md"
+keywords = ["redis", "websocket", "realtime", "pubsub", "actix"]
+categories = ["network-programming", "asynchronous"]
+
+
+[dependencies]
+async-trait = "0.1.89"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+futures-util = "0.3"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
