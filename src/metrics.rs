@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,7 +7,6 @@ struct Inner {
     messages_routed: AtomicU64,
     messages_dropped: AtomicU64,
     redis_reconnects: AtomicU64,
-    heartbeat_evictions: AtomicU64,
 }
 
 /// Cheap, lock-free counters for the router's health. Clone freely —
@@ -26,7 +24,6 @@ pub struct MetricsSnapshot {
     pub messages_routed: u64,
     pub messages_dropped: u64,
     pub redis_reconnects: u64,
-    pub heartbeat_evictions: u64,
 }
 
 impl Metrics {
@@ -36,7 +33,6 @@ impl Metrics {
             messages_routed: self.0.messages_routed.load(Ordering::Relaxed),
             messages_dropped: self.0.messages_dropped.load(Ordering::Relaxed),
             redis_reconnects: self.0.redis_reconnects.load(Ordering::Relaxed),
-            heartbeat_evictions: self.0.heartbeat_evictions.load(Ordering::Relaxed),
         }
     }
 
@@ -59,9 +55,5 @@ impl Metrics {
 
     pub(crate) fn record_reconnect(&self) {
         self.0.redis_reconnects.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn _record_heartbeat_eviction(&self) {
-        self.0.heartbeat_evictions.fetch_add(1, Ordering::Relaxed);
     }
 }

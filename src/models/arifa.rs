@@ -176,9 +176,9 @@ impl Arifa {
         }
 
         if let Some(handle) = self.sessions.lock().unwrap().remove(session_id) {
+            self.metrics.session_ended();
             handle.abort();
         }
-        self.metrics.session_ended();
     }
 
     /// Publishes a message to a Redis channel via the regular
