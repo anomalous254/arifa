@@ -7,11 +7,15 @@ It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, maki
 ## Features
 
 - Redis Pub/Sub
+- Shared Redis Pub/Sub connection per node
+- Automatic reconnect with exponential backoff
+- Automatic channel resubscription
 - Tokio async runtime
 - WebSocket session abstraction
 - Channel-based subscriptions
 - Multi-node message routing
 - Online user tracking
+- Lock-free metrics
 - Framework agnostic (`WsSession` trait)
 
 ## Installation
@@ -59,21 +63,24 @@ impl WsSession for MySession {
 
 ## Subscribing
 
-`subscribe()` returns a tuple containing the spawned task handle and the generated session id.
+`subscribe()` registers the session, marks it online, and returns a generated session id.
 
 ```rust
 let session = MySession;
 
-let (handle, session_id) = arifa.subscribe(
-    vec![
-        "Location::891e2040897ffff",
-        "User::42",
-    ],
+let channels = vec![
+    "Location::891e2040897ffff".to_string(),
+    "User::42".to_string(),
+];
+
+let session_id = arifa.subscribe(
+    channels.clone(),
     session,
+    "42",
 );
 ```
 
-The session id can be used to remove the connection from the online users set when the client disconnects.
+The returned session id is used when removing the connection from the online users set and unsubscribing.
 
 ## Publishing Messages
 
@@ -97,11 +104,11 @@ arifa
 
 ## Unsubscribing
 
-`unsubscribe()` aborts the subscription's Tokio task via `JoinHandle::abort()`. This is a hard stop, so any code that would otherwise run after the subscription loop — including online-user cleanup — is skipped. Call `remove_online_user` yourself when the WebSocket closes:
+When a WebSocket disconnects, remove the session from the online users set before unsubscribing.
 
 ```rust
 let _ = arifa.remove_online_user(&session_id).await;
-arifa.unsubscribe(handle);
+arifa.unsubscribe(&session_id, &channels);
 ```
 
 ## Message Model
@@ -136,22 +143,28 @@ pub enum MessageKind {
 
 ## Online Users
 
-A connection is marked online automatically inside `subscribe()`.
+A connection is automatically marked online inside `subscribe()`.
 
-Query the current online count:
+Query the current number of active sessions:
 
 ```rust
 let users = arifa.online_users().await?;
 println!("{users}");
 ```
 
-Remove a user when their connection closes:
+Remove a session when its WebSocket closes:
 
 ```rust
 let _ = arifa.remove_online_user(&session_id).await;
 ```
 
-Note: this count reflects active subscriptions, not unique users — a client with multiple concurrent subscriptions (e.g. multiple open tabs) is counted once per subscription.
+Check whether a user currently has any active sessions:
+
+```rust
+let online = arifa.is_user_online("42").await?;
+```
+
+> **Note:** The online count reflects active sessions, not unique users. Multiple browser tabs or devices for the same user count as multiple sessions.
 
 ## Multi-node Routing
 
@@ -172,6 +185,27 @@ arifa.publish("User::42", &message).await?;
 
 If `node_id` is `None`, every subscribed node receives the message.
 
+## Metrics
+
+Arifa exposes lightweight runtime metrics.
+
+```rust
+let metrics = arifa.metrics.snapshot();
+
+println!("Active sessions: {}", metrics.sessions_active);
+println!("Messages routed: {}", metrics.messages_routed);
+println!("Messages dropped: {}", metrics.messages_dropped);
+println!("Redis reconnects: {}", metrics.redis_reconnects);
+```
+
+## Graceful Shutdown
+
+Before shutting down your application, stop Arifa's background router and forwarding tasks.
+
+```rust
+arifa.shutdown();
+```
+
 ## Example: Actix Web
 
 ```rust
@@ -187,10 +221,15 @@ pub async fn notification_channel(
     let location = format!("Location::{}", query.get_cell()?);
     let user = format!("User::{}", query.user_id);
 
+    let channels = vec![location.clone(), user.clone()];
+
     let ws = ActixWsSession::new(session);
 
-    let (handle, session_id) =
-        state.arifa.subscribe(vec![&location, &user], ws);
+    let session_id = state.arifa.subscribe(
+        channels.clone(),
+        ws,
+        query.user_id.to_string(),
+    );
 
     let arifa = state.arifa.clone();
 
@@ -204,7 +243,7 @@ pub async fn notification_channel(
         }
 
         let _ = arifa.remove_online_user(&session_id).await;
-        arifa.unsubscribe(handle);
+        arifa.unsubscribe(&session_id, &channels);
     });
 
     Ok(resp)
@@ -214,22 +253,29 @@ pub async fn notification_channel(
 ## Architecture
 
 ```
-WebSocket Client
-        │
-        ▼
-WsSession
-        │
-        ▼
-Arifa
-        │
-        ▼
-Redis Pub/Sub
-        │
-        ▼
-Other Nodes
+                   WebSocket Client
+                           │
+                           ▼
+                      WsSession
+                           │
+                           ▼
+                 Per-session forwarder
+                           ▲
+                           │
+                    Routing Table
+                           │
+                           ▼
+          Shared Redis Pub/Sub Router
+                (one per application node)
+                           │
+                           ▼
+                     Redis Pub/Sub
+                           │
+                           ▼
+                      Other Nodes
 ```
 
-Each subscription owns its own Redis Pub/Sub connection and runs inside a dedicated Tokio task.
+Each Arifa instance maintains a single Redis Pub/Sub connection that is shared by all subscriptions on that node. Incoming messages are routed to subscribed sessions through an in-memory routing table. If the Redis connection drops, Arifa automatically reconnects and resubscribes to all active channels.
 
 ## Use Cases
 
@@ -243,9 +289,11 @@ Each subscription owns its own Redis Pub/Sub connection and runs inside a dedica
 
 ## Notes
 
-- `unsubscribe()` uses `JoinHandle::abort()` (hard stop) — callers are responsible for calling `remove_online_user` themselves.
-- Each subscription spawns a dedicated Tokio task and generates its own session id.
-- A Redis Pub/Sub connection is created per subscription.
+- One shared Redis Pub/Sub connection is used per application node.
+- Each subscribed session runs in its own forwarding task.
+- Session message queues are bounded to prevent slow clients from consuming unbounded memory.
+- Redis reconnects and channel resubscriptions happen automatically.
+- Call `remove_online_user()` before `unsubscribe()` when a client disconnects.
 
 ## License
 
