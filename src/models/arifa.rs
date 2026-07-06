@@ -166,6 +166,7 @@ impl Arifa {
     /// Tears down a session: tells the router to drop it from each
     /// channel's routing table, removes it from the local session
     /// registry, and aborts the forwarding task.
+    /// and subs 1 from the tracked metrics sessions
     pub fn unsubscribe(&self, session_id: &str, channels: &[String]) {
         for channel in channels {
             let _ = self.command_tx.send(RouterCommand::Unsubscribe {
@@ -177,6 +178,7 @@ impl Arifa {
         if let Some(handle) = self.sessions.lock().unwrap().remove(session_id) {
             handle.abort();
         }
+        self.metrics.session_ended();
     }
 
     /// Publishes a message to a Redis channel via the regular
