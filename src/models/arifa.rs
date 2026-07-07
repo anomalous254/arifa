@@ -33,6 +33,7 @@ enum RouterCommand {
         channel: String,
         session_id: String,
         sender: mpsc::Sender<WsMessage>,
+        ack: tokio::sync::oneshot::Sender<()>,
     },
     Unsubscribe {
         channel: String,
@@ -110,7 +111,7 @@ impl Arifa {
     ///
     /// Returns the generated session_id. Pass it, plus the same
     /// `channels`, to [`Arifa::unsubscribe`] when the session ends.
-    pub fn subscribe<C, S>(
+    pub async fn subscribe<C, S>(
         &self,
         channels: impl IntoIterator<Item = S>,
         session: C,
@@ -129,11 +130,14 @@ impl Arifa {
         let (tx, mut rx) = mpsc::channel::<WsMessage>(SESSION_CHANNEL_CAPACITY);
 
         for channel in &channels {
+            let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let _ = self.command_tx.send(RouterCommand::Subscribe {
                 channel: channel.clone(),
                 session_id: session_id.clone(),
                 sender: tx.clone(),
+                ack: ack_tx,
             });
+            let _ = ack_rx.await; // don't return until the router has actually registered this channel
         }
 
         self.metrics.session_started();
@@ -349,6 +353,7 @@ async fn run_router(
                     channel,
                     session_id,
                     sender,
+                    ack,
                 })) => {
                     let is_new_channel = routing.subscribe(&channel, &session_id, sender);
                     if is_new_channel {
@@ -360,6 +365,7 @@ async fn run_router(
                             continue 'connection;
                         }
                     }
+                    let _ = ack.send(());
                 }
                 Action::Command(Some(RouterCommand::Unsubscribe {
                     channel,

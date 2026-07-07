@@ -77,7 +77,7 @@ let session_id = arifa.subscribe(
     channels.clone(),
     session,
     "42",
-);
+).await?;
 ```
 
 The returned session id is used when removing the connection from the online users set and unsubscribing.
