@@ -50,7 +50,20 @@ enum RouterCommand {
 /// to every channel still in use if the connection drops.
 #[derive(Clone)]
 pub struct Arifa {
+    /// Dedicated connection for `publish()` — the hot path. Kept separate
+    /// from `presence_manager` so publish latency can never queue behind
+    /// bursts of online-user bookkeeping writes (SADD/SET/SREM), and vice
+    /// versa. Each `ConnectionManager` multiplexes exactly one physical
+    /// connection, so two managers means two real, independent
+    /// connections to Redis.
     manager: ConnectionManager,
+    /// Dedicated connection for online-user presence tracking
+    /// (`add_online_user` / `remove_online_user` / `is_user_online` /
+    /// `online_users`). Separate from `manager` for the same reason: a
+    /// burst of presence writes (e.g. many sessions connecting at once)
+    /// must never delay message delivery on the publish path, and a
+    /// burst of publishes must never delay presence bookkeeping.
+    presence_manager: ConnectionManager,
     node_id: String,
     command_tx: mpsc::UnboundedSender<RouterCommand>,
     /// Every currently-live forwarding task, keyed by session_id, so
@@ -70,7 +83,17 @@ impl Arifa {
     ) -> redis::RedisResult<Self> {
         let redis_url = redis_url.as_ref().to_string();
         let client = Client::open(redis_url.as_str())?;
+
+        // Two independent physical connections from the same client: one
+        // dedicated to publish() traffic, one to presence bookkeeping.
+        // This is on top of the router's own separate pub/sub connection
+        // (opened inside run_router), so each node holds three Redis
+        // connections total — a small, fixed cost in exchange for
+        // guaranteeing none of the three workloads can queue behind
+        // another under load.
         let manager = client.get_connection_manager().await?;
+        let presence_manager = client.get_connection_manager().await?;
+
         let node_id = node_id.into();
         let metrics = Metrics::default();
 
@@ -94,6 +117,7 @@ impl Arifa {
 
         Ok(Self {
             manager,
+            presence_manager,
             node_id,
             command_tx,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -145,6 +169,10 @@ impl Arifa {
         let task_session_id = session_id.clone();
         let metrics = self.metrics.clone();
         let handle = tokio::spawn(async move {
+            // Now safe to re-enable: this goes over `presence_manager`,
+            // a connection dedicated to bookkeeping traffic, so it can
+            // no longer queue behind (or block) publish() traffic on
+            // `manager`.
             if let Err(err) = arifa.add_online_user(&task_session_id, &user_id).await {
                 eprintln!("Failed to mark session '{task_session_id}' online: {err}");
             }
@@ -185,9 +213,10 @@ impl Arifa {
         }
     }
 
-    /// Publishes a message to a Redis channel via the regular
-    /// `ConnectionManager` (not the pub/sub connection) — publishing
-    /// scales independently of subscriber count.
+    /// Publishes a message to a Redis channel via the dedicated publish
+    /// `ConnectionManager` (not the pub/sub connection, and not the
+    /// presence connection) — publishing scales independently of both
+    /// subscriber count and presence-bookkeeping load.
     pub async fn publish(
         &self,
         channel: impl AsRef<str>,
@@ -207,7 +236,7 @@ impl Arifa {
     /// directly when a session's connection closes (e.g. from the
     /// message-stream loop in your ws handler on `Close`/error).
     pub async fn remove_online_user(&self, session_id: &str) -> redis::RedisResult<()> {
-        let mut conn = self.manager.clone();
+        let mut conn = self.presence_manager.clone();
 
         let user_id: Option<String> = conn
             .get(format!("{SESSION_USER_PREFIX}:{session_id}"))
@@ -229,7 +258,7 @@ impl Arifa {
     }
 
     pub async fn add_online_user(&self, session_id: &str, user_id: &str) -> redis::RedisResult<()> {
-        let mut conn = self.manager.clone();
+        let mut conn = self.presence_manager.clone();
 
         let _: usize = conn.sadd(ONLINE_USERS_KEY, session_id).await?;
 
@@ -245,7 +274,7 @@ impl Arifa {
     }
 
     pub async fn is_user_online(&self, user_id: &str) -> redis::RedisResult<bool> {
-        let mut conn = self.manager.clone();
+        let mut conn = self.presence_manager.clone();
         let count: u64 = conn
             .scard(format!("{USER_SESSIONS_PREFIX}:{user_id}"))
             .await?;
@@ -253,7 +282,7 @@ impl Arifa {
     }
 
     pub async fn online_users(&self) -> redis::RedisResult<u64> {
-        let mut conn = self.manager.clone();
+        let mut conn = self.presence_manager.clone();
         conn.scard(ONLINE_USERS_KEY).await
     }
 

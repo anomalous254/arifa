@@ -1,11 +1,11 @@
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -32,8 +32,7 @@ impl WsSession for AxumWsSession {
     type Error = axum::Error;
 
     async fn send(&self, event: WsMessage) -> Result<(), Self::Error> {
-        let payload = serde_json::to_string(&event)
-            .map_err(axum::Error::new)?;
+        let payload = serde_json::to_string(&event).map_err(axum::Error::new)?;
         let mut sender = self.sender.lock().await;
         sender.send(Message::Text(payload)).await
     }
@@ -64,9 +63,7 @@ async fn main() {
         .route("/online", get(online_users))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
     println!("Server running on http://0.0.0.0:3000");
     axum::serve(listener, app).await.unwrap();
@@ -96,9 +93,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: ConnectQuery)
     let location_channel = format!("Location::{}", params.location);
     let user_channel = format!("User::{}", params.user_id);
 
-    let (handle, session_id) = state
+    let session_id = state
         .arifa
-        .subscribe(vec![&location_channel, &user_channel], session);
+        .subscribe(
+            vec![&location_channel, &user_channel],
+            session,
+            params.user_id,
+        )
+        .await;
 
     let arifa = state.arifa.clone();
 
@@ -113,7 +115,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, params: ConnectQuery)
 
     // Cleanup on disconnect
     let _ = arifa.remove_online_user(&session_id).await;
-    arifa.unsubscribe(handle);
+    arifa.unsubscribe(&session_id, vec![&location_channel, &user_channel]);
 }
 
 // ---- Simple HTTP route to publish a test broadcast message ----

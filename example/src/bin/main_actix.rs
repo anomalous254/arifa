@@ -1,4 +1,4 @@
-use actix_web::{get, web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{App, Error, HttpRequest, HttpResponse, HttpServer, get, web};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -49,7 +49,10 @@ async fn notification_channel(
 
     let ws = ActixWsSession { session };
 
-    let (handle, session_id) = state.arifa.subscribe(vec![&location, &user], ws);
+    let session_id = state
+        .arifa
+        .subscribe(vec![&location, &user], ws, query.user_id)
+        .await;
 
     let arifa = state.arifa.clone();
 
@@ -63,7 +66,7 @@ async fn notification_channel(
         }
 
         let _ = arifa.remove_online_user(&session_id).await;
-        arifa.unsubscribe(handle);
+        arifa.unsubscribe(&session_id, vec![&location, &user]);
     });
 
     Ok(resp)

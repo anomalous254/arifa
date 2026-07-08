@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
-arifa = "0.1.41"
+arifa = "0.3.44"
 async-trait = "0.1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,5 +24,3 @@ path = "src/bin/main_actix.rs"
 [[bin]]
 name = "axum"
 path = "src/bin/main_axum.rs"
-
-

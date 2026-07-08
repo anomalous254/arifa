@@ -18,6 +18,25 @@ It provides a simple abstraction over Redis Pub/Sub and WebSocket sessions, maki
 - Lock-free metrics
 - Framework agnostic (`WsSession` trait)
 
+## Benchmarks
+
+| Benchmark | Result |
+|---|---|
+| Subscribe → unsubscribe (round trip) | ~1.1 ms |
+| Message serialization | ~0.18 µs |
+| Cross-node publish → receive | ~375 µs |
+| Delivery throughput @ 100 subscribers | ~185,000 msg/sec |
+| Delivery throughput @ 1,000 subscribers | ~260,000 msg/sec |
+| Delivery throughput @ 10,000 subscribers | ~270,000 msg/sec |
+| Fan-out: 1 channel × 2,000 subs (1 publish) | ~17 ms |
+| Fan-out: 2,000 channels × 1 sub each (2,000 publishes) | ~490 ms |
+| Messages dropped / Redis reconnects | 0 / 0 |
+
+Delivery throughput holds steady from 100 to 10,000 concurrent subscribers on a single channel — total time to fan out scales with `sessions × messages`, not with a drop in per-message throughput.
+
+Benchmarks live in their own crate at [`benchmarks/`](./benchmarks) and use [Criterion](https://github.com/bheisler/criterion.rs) against a local Redis instance. See [`benchmarks/README.md`](./benchmarks/README.md) for how to run them yourself and what each one measures.
+
+
 ## Installation
 
 ```bash
@@ -77,7 +96,7 @@ let session_id = arifa.subscribe(
     channels.clone(),
     session,
     "42",
-).await?;
+).await;
 ```
 
 The returned session id is used when removing the connection from the online users set and unsubscribing.
