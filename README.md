@@ -171,6 +171,19 @@ let users = arifa.online_users().await?;
 println!("{users}");
 ```
 
+## Online User Server Node
+
+A user's `node_id` is automatically recorded when `subscribe()` is called.
+
+To retrieve the user's current `node_id`:
+
+```rust
+let node_id = arifa.get_user_node_id(&user_id).await?;
+println!("{node_id}");
+```
+
+If the user is not online, `get_user_node_id()` returns `None`.
+
 Remove a session when its WebSocket closes:
 
 ```rust

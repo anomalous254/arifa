@@ -1,6 +1,6 @@
 [package]
 name = "arifa"
-version = "0.3.45"
+version = "0.3.46"
 edition = "2024"
 description = "Redis-based realtime pub/sub engine for WebSocket applications"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 futures-util = "0.3"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager","tokio-rustls-comp"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 
