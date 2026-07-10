@@ -3,6 +3,7 @@
 mod metrics;
 mod models;
 pub mod prelude;
+mod router;
 mod routing_table;
 mod session;
 

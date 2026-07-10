@@ -1,12 +1,10 @@
 use super::event::WsMessage;
 use crate::metrics::Metrics;
-use crate::routing_table::RoutingTable;
+use crate::router::{RouterCommand, run_router};
 use crate::session::WsSession;
-use futures_util::StreamExt;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -14,32 +12,13 @@ use uuid::Uuid;
 const ONLINE_USERS_KEY: &str = "arifa:online_users";
 const USER_SESSIONS_PREFIX: &str = "arifa:user_sessions";
 const SESSION_USER_PREFIX: &str = "arifa:session_user";
+const USER_NODE_PREFIX: &str = "arifa:user_node";
 
 /// Buffer size for each session's forwarding channel. A slow client can
 /// have this many messages queued before new ones start getting dropped
 /// (see `RoutingTable::route`) — this bounds per-session memory instead
 /// of letting one stuck client grow without limit.
 const SESSION_CHANNEL_CAPACITY: usize = 256;
-
-/// Initial and max backoff when the shared Redis pub/sub connection
-/// drops and needs to be reestablished.
-const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
-const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
-
-/// Commands sent from `Arifa::subscribe`/`unsubscribe` to the single
-/// background router task that owns the real Redis pub/sub connection.
-enum RouterCommand {
-    Subscribe {
-        channel: String,
-        session_id: String,
-        sender: mpsc::Sender<WsMessage>,
-        ack: tokio::sync::oneshot::Sender<()>,
-    },
-    Unsubscribe {
-        channel: String,
-        session_id: String,
-    },
-}
 
 /// Core realtime pub/sub engine built on Redis.
 ///
@@ -245,29 +224,52 @@ impl Arifa {
         let _: usize = conn.srem(ONLINE_USERS_KEY, session_id).await?;
 
         if let Some(user_id) = user_id {
-            let _: usize = conn
-                .srem(format!("{USER_SESSIONS_PREFIX}:{user_id}"), session_id)
-                .await?;
+            let user_sessions_key = format!("{USER_SESSIONS_PREFIX}:{user_id}");
+
+            let _: usize = conn.srem(&user_sessions_key, session_id).await?;
 
             let _: usize = conn
                 .del(format!("{SESSION_USER_PREFIX}:{session_id}"))
                 .await?;
+
+            // If this was the last session, remove the node mapping too.
+            let remaining: u64 = conn.scard(&user_sessions_key).await?;
+
+            if remaining == 0 {
+                let _: usize = conn.del(format!("{USER_NODE_PREFIX}:{user_id}")).await?;
+
+                let _: usize = conn.del(user_sessions_key).await?;
+            }
         }
 
         Ok(())
     }
 
+    pub async fn get_user_node_id(&self, user_id: &str) -> redis::RedisResult<Option<String>> {
+        let mut conn = self.presence_manager.clone();
+
+        conn.get(format!("{USER_NODE_PREFIX}:{user_id}")).await
+    }
+
     pub async fn add_online_user(&self, session_id: &str, user_id: &str) -> redis::RedisResult<()> {
         let mut conn = self.presence_manager.clone();
 
+        // session is online
         let _: usize = conn.sadd(ONLINE_USERS_KEY, session_id).await?;
 
+        // session -> user
         let _: () = conn
             .set(format!("{SESSION_USER_PREFIX}:{session_id}"), user_id)
             .await?;
 
+        // user -> sessions
         let _: usize = conn
             .sadd(format!("{USER_SESSIONS_PREFIX}:{user_id}"), session_id)
+            .await?;
+
+        // user -> node
+        let _: () = conn
+            .set(format!("{USER_NODE_PREFIX}:{user_id}"), &self.node_id)
             .await?;
 
         Ok(())
@@ -299,154 +301,4 @@ impl Arifa {
 
         let _ = self.shutdown_tx.send(true);
     }
-}
-
-/// The single background task (per node) that owns the real Redis
-/// pub/sub connection. Reconnects with backoff if the connection drops,
-/// resubscribing to every channel still in `routing` afterward.
-async fn run_router(
-    redis_url: String,
-    node_id: String,
-    mut cmd_rx: mpsc::UnboundedReceiver<RouterCommand>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    metrics: Metrics,
-) {
-    let client = match Client::open(redis_url.as_str()) {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("Arifa router: invalid redis url: {err}");
-            return;
-        }
-    };
-
-    let mut routing = RoutingTable::new();
-    let mut backoff = RECONNECT_INITIAL_BACKOFF;
-
-    'connection: loop {
-        if *shutdown_rx.borrow() {
-            break;
-        }
-
-        let mut pubsub = match client.get_async_pubsub().await {
-            Ok(p) => p,
-            Err(err) => {
-                eprintln!(
-                    "Arifa router: failed to open pub/sub connection: {err} (retrying in {backoff:?})"
-                );
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
-                continue 'connection;
-            }
-        };
-
-        // Fresh connection — resubscribe to everything already in the
-        // routing table (non-empty only after a reconnect, since we
-        // start empty on first boot).
-        for channel in routing.channels() {
-            if let Err(err) = pubsub.subscribe(&channel).await {
-                eprintln!("Router failed to resubscribe to '{channel}' after reconnect: {err}");
-            }
-        }
-        backoff = RECONNECT_INITIAL_BACKOFF; // reset after a successful (re)connect
-
-        enum Action {
-            Command(Option<RouterCommand>),
-            Message(Option<redis::Msg>),
-            Shutdown,
-        }
-
-        loop {
-            // `on_message()` borrows `pubsub` mutably for the stream's
-            // lifetime, so it's scoped tightly: build it, select, then
-            // let it drop before touching `pubsub` again (subscribe/
-            // unsubscribe below need `&mut pubsub` with no live borrow).
-            let action = {
-                let mut msg_stream = pubsub.on_message();
-                tokio::select! {
-                    cmd = cmd_rx.recv() => Action::Command(cmd),
-                    msg = msg_stream.next() => Action::Message(msg),
-                    _ = shutdown_rx.changed() => Action::Shutdown,
-                }
-            };
-
-            match action {
-                Action::Shutdown => {
-                    println!("Arifa router for node '{node_id}' shutting down.");
-                    break 'connection;
-                }
-                Action::Command(None) => {
-                    // Every Arifa handle was dropped.
-                    break 'connection;
-                }
-                Action::Command(Some(RouterCommand::Subscribe {
-                    channel,
-                    session_id,
-                    sender,
-                    ack,
-                })) => {
-                    let is_new_channel = routing.subscribe(&channel, &session_id, sender);
-                    if is_new_channel {
-                        if let Err(err) = pubsub.subscribe(&channel).await {
-                            eprintln!("Router failed to subscribe to '{channel}': {err}");
-                            // Treat as a dead connection and force a reconnect
-                            // rather than silently never receiving this channel.
-                            metrics.record_reconnect();
-                            continue 'connection;
-                        }
-                    }
-                    let _ = ack.send(());
-                }
-                Action::Command(Some(RouterCommand::Unsubscribe {
-                    channel,
-                    session_id,
-                })) => {
-                    let should_unsubscribe = routing.unsubscribe(&channel, &session_id);
-                    if should_unsubscribe {
-                        if let Err(err) = pubsub.unsubscribe(&channel).await {
-                            eprintln!("Router failed to unsubscribe from '{channel}': {err}");
-                        }
-                    }
-                }
-                Action::Message(None) => {
-                    eprintln!(
-                        "Arifa router: pub/sub stream ended unexpectedly, reconnecting in {backoff:?}"
-                    );
-                    metrics.record_reconnect();
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
-                    continue 'connection;
-                }
-                Action::Message(Some(msg)) => {
-                    let channel = msg.get_channel_name().to_string();
-
-                    let payload = match msg.get_payload::<String>() {
-                        Ok(p) => p,
-                        Err(err) => {
-                            eprintln!("Invalid payload on '{channel}': {err}");
-                            continue;
-                        }
-                    };
-
-                    let event: WsMessage = match serde_json::from_str(&payload) {
-                        Ok(e) => e,
-                        Err(err) => {
-                            eprintln!("Invalid JSON on '{channel}': {err}");
-                            continue;
-                        }
-                    };
-
-                    if let Some(target_node) = &event.node_id
-                        && target_node != &node_id
-                    {
-                        continue;
-                    }
-
-                    let (delivered, dropped) = routing.route(&channel, event);
-                    metrics.record_routed(delivered as u64, dropped as u64);
-                }
-            }
-        }
-    }
-
-    println!("Arifa router for node '{node_id}' stopped.");
 }
