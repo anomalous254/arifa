@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use redis::Client;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tracing::{info, warn};
 
 /// Initial and max backoff when the shared Redis pub/sub connection
 /// drops and needs to be reestablished.
@@ -39,7 +40,7 @@ pub async fn run_router(
     let client = match Client::open(redis_url.as_str()) {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("Arifa router: invalid redis url: {err}");
+            warn!("Arifa router: invalid redis url: {err}");
             return;
         }
     };
@@ -55,9 +56,8 @@ pub async fn run_router(
         let mut pubsub = match client.get_async_pubsub().await {
             Ok(p) => p,
             Err(err) => {
-                eprintln!(
-                    "Arifa router: failed to open pub/sub connection: {err} (retrying in {backoff:?})"
-                );
+                warn!("Arifa router: failed to open pub/sub connection: {err} (retrying in {backoff:?})");
+                
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
                 continue 'connection;
@@ -69,7 +69,8 @@ pub async fn run_router(
         // start empty on first boot).
         for channel in routing.channels() {
             if let Err(err) = pubsub.subscribe(&channel).await {
-                eprintln!("Router failed to resubscribe to '{channel}' after reconnect: {err}");
+                warn!("Router failed to resubscribe to '{channel}' after reconnect: {err}");
+                
             }
         }
         backoff = RECONNECT_INITIAL_BACKOFF; // reset after a successful (re)connect
@@ -96,7 +97,7 @@ pub async fn run_router(
 
             match action {
                 Action::Shutdown => {
-                    println!("Arifa router for node '{node_id}' shutting down.");
+                    info!("Arifa router for node '{node_id}' shutting down.");
                     break 'connection;
                 }
                 Action::Command(None) => {
@@ -112,7 +113,8 @@ pub async fn run_router(
                     let is_new_channel = routing.subscribe(&channel, &session_id, sender);
                     if is_new_channel {
                         if let Err(err) = pubsub.subscribe(&channel).await {
-                            eprintln!("Router failed to subscribe to '{channel}': {err}");
+                            warn!("Router failed to subscribe to '{channel}': {err}");
+                            
                             // Treat as a dead connection and force a reconnect
                             // rather than silently never receiving this channel.
                             metrics.record_reconnect();
@@ -128,14 +130,15 @@ pub async fn run_router(
                     let should_unsubscribe = routing.unsubscribe(&channel, &session_id);
                     if should_unsubscribe {
                         if let Err(err) = pubsub.unsubscribe(&channel).await {
-                            eprintln!("Router failed to unsubscribe from '{channel}': {err}");
+                            warn!("Router failed to unsubscribe from '{channel}': {err}");
                         }
                     }
                 }
                 Action::Message(None) => {
-                    eprintln!(
+                    warn!(
                         "Arifa router: pub/sub stream ended unexpectedly, reconnecting in {backoff:?}"
                     );
+                    
                     metrics.record_reconnect();
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
@@ -147,7 +150,7 @@ pub async fn run_router(
                     let payload = match msg.get_payload::<String>() {
                         Ok(p) => p,
                         Err(err) => {
-                            eprintln!("Invalid payload on '{channel}': {err}");
+                            warn!("Invalid payload on '{channel}': {err}");
                             continue;
                         }
                     };
@@ -155,7 +158,7 @@ pub async fn run_router(
                     let event: WsMessage = match serde_json::from_str(&payload) {
                         Ok(e) => e,
                         Err(err) => {
-                            eprintln!("Invalid JSON on '{channel}': {err}");
+                            warn!("Invalid JSON on '{channel}': {err}");
                             continue;
                         }
                     };
@@ -173,5 +176,5 @@ pub async fn run_router(
         }
     }
 
-    println!("Arifa router for node '{node_id}' stopped.");
+    info!("Arifa router for node '{node_id}' stopped.");
 }

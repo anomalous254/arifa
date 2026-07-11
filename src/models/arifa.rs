@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+use tracing::{warn, info};
 
 const ONLINE_USERS_KEY: &str = "arifa:online_users";
 const USER_SESSIONS_PREFIX: &str = "arifa:user_sessions";
@@ -153,7 +154,7 @@ impl Arifa {
             // no longer queue behind (or block) publish() traffic on
             // `manager`.
             if let Err(err) = arifa.add_online_user(&task_session_id, &user_id).await {
-                eprintln!("Failed to mark session '{task_session_id}' online: {err}");
+                warn!("Failed to mark session '{task_session_id}' online: {err}");
             }
 
             while let Some(event) = rx.recv().await {
@@ -163,7 +164,7 @@ impl Arifa {
             }
 
             metrics.session_ended();
-            println!("Forwarder for session '{task_session_id}' stopped.");
+            info!("Forwarder for session '{task_session_id}' stopped.");
         });
 
         self.sessions
@@ -292,13 +293,17 @@ impl Arifa {
     /// forwarding task (so clients get a clean close rather than a
     /// silent hang) and signals the router task to stop. Call this from
     /// your SIGTERM/shutdown handler before the process exits.
-    pub fn shutdown(&self) {
-        let mut sessions = self.sessions.lock().unwrap();
-        for (_, handle) in sessions.drain() {
+    pub async fn shutdown(&self) {
+        let sessions: Vec<(String, tokio::task::JoinHandle<()>)> = {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.drain().collect()
+        };
+    
+        for (session_id, handle) in sessions {
+            let _ = self.remove_online_user(&session_id).await;
             handle.abort();
         }
-        drop(sessions);
-
+    
         let _ = self.shutdown_tx.send(true);
     }
 }

@@ -235,7 +235,28 @@ println!("Redis reconnects: {}", metrics.redis_reconnects);
 Before shutting down your application, stop Arifa's background router and forwarding tasks.
 
 ```rust
-arifa.shutdown();
+arifa.shutdown().await;
+```
+
+## Logging
+
+Arifa emits logs using the `tracing` crate.
+
+To see these logs, initialize a tracing subscriber in your application:
+
+```rust
+use tracing_subscriber::{fmt, EnvFilter};
+
+fmt()
+    .with_env_filter(EnvFilter::from_default_env())
+    .init();
+```
+
+Example:
+
+```bash
+RUST_LOG=info cargo run
+RUST_LOG=arifa=debug cargo run
 ```
 
 ## Example: Actix Web
