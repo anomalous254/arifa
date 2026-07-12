@@ -95,7 +95,7 @@ impl Arifa {
             });
         }
 
-        Ok(Self {
+        let arifa = Self {
             manager,
             presence_manager,
             node_id,
@@ -103,7 +103,20 @@ impl Arifa {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             shutdown_tx,
             metrics,
-        })
+        };
+        
+        // Initialize the in-memory session counter from Redis.
+        //
+        // `sessions_active` lives only in memory, so after a process restart it
+        // starts at 0 even if users are still connected. Seed it once from Redis
+        // so the metric reflects the current online session count immediately.
+        // After initialization, the counter is maintained entirely in memory via
+        // `session_started()` and `session_ended()`.
+        if let Ok(count) = arifa.online_users().await {
+            arifa.metrics.set_sessions_active(count);
+        }
+        
+        Ok(arifa)
     }
 
     pub fn node_id(&self) -> &str {

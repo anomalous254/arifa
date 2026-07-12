@@ -56,4 +56,8 @@ impl Metrics {
     pub(crate) fn record_reconnect(&self) {
         self.0.redis_reconnects.fetch_add(1, Ordering::Relaxed);
     }
+
+    pub(crate) fn set_sessions_active(&self, value: u64) {
+        self.0.sessions_active.store(value, Ordering::Relaxed);
+    }
 }
